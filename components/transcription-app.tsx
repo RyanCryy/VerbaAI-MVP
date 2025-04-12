@@ -822,79 +822,76 @@ Troubleshooting tips:
   const transcribeRecording = async (blob: Blob, isFinal: boolean) => {
     if (!blob || blob.size === 0) {
       console.log("No audio data to transcribe")
-      setIsTranscribing(false) // Reset transcribing state
+      setIsTranscribing(false)
       return
     }
 
     try {
-      // Log the size of the audio blob
       console.log(`Audio blob size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`)
 
-      // For interim transcriptions, check if the blob is too large
       if (!isFinal && blob.size > 5 * 1024 * 1024) {
-        // 5MB threshold for interim
-        // Create a smaller chunk from the last 30 seconds of audio
-        // This is an optimization to avoid sending the entire recording for interim updates
         const chunks = audioChunksRef.current
-        const recentChunks = chunks.slice(Math.max(0, chunks.length - 30)) // Get last ~30 chunks (assuming 1s intervals)
+        const recentChunks = chunks.slice(Math.max(0, chunks.length - 30))
         blob = new Blob(recentChunks, { type: mediaRecorderRef.current?.mimeType || "audio/webm" })
         console.log(`Created smaller blob for interim transcription: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`)
       }
 
-      // Create a FormData object
       const formData = new FormData()
       formData.append("file", blob, "audio.webm")
       formData.append("model", "whisper-1")
 
-      // Call the API directly from the client
-      const response = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      })
+      // Add retry logic
+      let retries = 3
+      let lastError = null
 
-      if (!response.ok) {
-        throw new Error(`Transcription API error: ${response.status}`)
-      }
+      while (retries > 0) {
+        try {
+          const response = await fetch("/api/transcribe", {
+            method: "POST",
+            body: formData,
+          })
 
-      const result = await response.json()
-
-      // Reset transcribing state
-      setIsTranscribing(false)
-
-      if (result.error) {
-        setErrorMessage(result.error)
-        console.error("Transcription error:", result.error)
-      } else if (result.text) {
-        // Filter out the "Transcribed by https://otter.ai" text
-        let newText = result.text.trim()
-        if (newText.includes("Transcribed by https://otter.ai")) {
-          newText = newText.replace("Transcribed by https://otter.ai", "").trim()
-          console.log("Filtered out 'Transcribed by otter.ai' text")
-        }
-
-        if (newText) {
-          console.log(`Received transcription: "${newText.substring(0, 50)}..."`)
-          if (isFinal) {
-            // For final transcription, replace everything
-            setTranscription(newText)
-          } else {
-            // For interim transcriptions, append new text
-            if (!transcription.includes(newText)) {
-              setTranscription((prev) => {
-                return prev + (prev && !prev.endsWith(" ") ? " " : "") + newText
-              })
-            }
+          if (!response.ok) {
+            throw new Error(`Transcription API error: ${response.status}`)
           }
-        } else {
-          console.log("Received empty transcription after filtering")
+
+          const result = await response.json()
+
+          if (result.error) {
+            throw new Error(result.error)
+          }
+
+          if (result.text) {
+            let newText = result.text.trim()
+            if (newText.includes("Transcribed by https://otter.ai")) {
+              newText = newText.replace("Transcribed by https://otter.ai", "").trim()
+            }
+            setTranscription((prev) => {
+              if (isFinal) {
+                return newText
+              }
+              return prev + (prev ? "\n" : "") + newText
+            })
+          }
+
+          setIsTranscribing(false)
+          return
+        } catch (error) {
+          lastError = error
+          retries--
+          if (retries > 0) {
+            console.log(`Retrying transcription... (${retries} attempts left)`)
+            await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second before retry
+          }
         }
       }
+
+      // If we get here, all retries failed
+      throw lastError
     } catch (error: any) {
       console.error("Transcription error:", error)
-      setIsTranscribing(false) // Reset transcribing state on error
-      if (isFinal) {
-        setErrorMessage(`Transcription failed: ${error.message}`)
-      }
+      setErrorMessage(error.message || "Failed to transcribe audio")
+      setIsTranscribing(false)
     }
   }
 
@@ -1087,9 +1084,8 @@ ${transcription}`
         // Recording Options
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <div
-            className={`relative overflow-hidden group rounded-xl border border-slate-800 bg-gradient-to-b from-slate-800 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 ${
-              isInitializing && recordingMode === "mic" ? "border-emerald-500/50 shadow-lg shadow-emerald-500/10" : ""
-            }`}
+            className={`relative overflow-hidden group rounded-xl border border-slate-800 bg-gradient-to-b from-slate-800 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 ${isInitializing && recordingMode === "mic" ? "border-emerald-500/50 shadow-lg shadow-emerald-500/10" : ""
+              }`}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
             <button
@@ -1137,11 +1133,10 @@ ${transcription}`
           </div>
 
           <div
-            className={`relative overflow-hidden group rounded-xl border border-slate-800 bg-gradient-to-b from-slate-800 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 ${
-              isInitializing && recordingMode === "screen"
+            className={`relative overflow-hidden group rounded-xl border border-slate-800 bg-gradient-to-b from-slate-800 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 ${isInitializing && recordingMode === "screen"
                 ? "border-emerald-500/50 shadow-lg shadow-emerald-500/10"
                 : ""
-            }`}
+              }`}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
             <button
@@ -1190,9 +1185,8 @@ ${transcription}`
 
           {/* New Desktop App Recording Option */}
           <div
-            className={`relative overflow-hidden group rounded-xl border border-amber-500/50 bg-gradient-to-b from-amber-900/20 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-amber-500/20 hover:border-amber-500 ${
-              isInitializing && recordingMode === "desktop-app" ? "border-amber-500 shadow-lg shadow-amber-500/20" : ""
-            }`}
+            className={`relative overflow-hidden group rounded-xl border border-amber-500/50 bg-gradient-to-b from-amber-900/20 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-amber-500/20 hover:border-amber-500 ${isInitializing && recordingMode === "desktop-app" ? "border-amber-500 shadow-lg shadow-amber-500/20" : ""
+              }`}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-amber-500/20 via-transparent to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-300"></div>
             <button
@@ -1240,9 +1234,8 @@ ${transcription}`
           </div>
 
           <div
-            className={`relative overflow-hidden group rounded-xl border border-emerald-500/50 bg-gradient-to-b from-emerald-900/20 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/20 hover:border-emerald-500 ${
-              isInitializing && recordingMode === "both" ? "border-emerald-500 shadow-lg shadow-emerald-500/20" : ""
-            }`}
+            className={`relative overflow-hidden group rounded-xl border border-emerald-500/50 bg-gradient-to-b from-emerald-900/20 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/20 hover:border-emerald-500 ${isInitializing && recordingMode === "both" ? "border-emerald-500 shadow-lg shadow-emerald-500/20" : ""
+              }`}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/20 via-transparent to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-300"></div>
             <button
@@ -1375,9 +1368,8 @@ ${transcription}`
                 <Progress
                   value={recordingHealth}
                   className="h-2 bg-slate-700"
-                  indicatorClassName={`${
-                    recordingHealth > 70 ? "bg-emerald-500" : recordingHealth > 30 ? "bg-amber-500" : "bg-red-500"
-                  }`}
+                  indicatorClassName={`${recordingHealth > 70 ? "bg-emerald-500" : recordingHealth > 30 ? "bg-amber-500" : "bg-red-500"
+                    }`}
                 />
               </div>
 
@@ -1411,11 +1403,10 @@ ${transcription}`
             <Button
               variant="outline"
               onClick={isPaused ? resumeRecording : pauseRecording}
-              className={`h-auto py-6 flex flex-col items-center justify-center gap-2 ${
-                isPaused
+              className={`h-auto py-6 flex flex-col items-center justify-center gap-2 ${isPaused
                   ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
                   : "border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
-              }`}
+                }`}
             >
               <div className="bg-slate-800 p-2 rounded-full">
                 {isPaused ? <Play className="h-6 w-6" /> : <Pause className="h-6 w-6" />}

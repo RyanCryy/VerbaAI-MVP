@@ -5,10 +5,30 @@ import { join } from "path"
 import { v4 as uuidv4 } from "uuid"
 import { mkdir } from "fs/promises"
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-})
+// Initialize OpenAI client with error handling
+let openai: OpenAI
+try {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is not set in environment variables")
+  }
+  openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  })
+} catch (error) {
+  console.error("Failed to initialize OpenAI client:", error)
+  throw error
+}
+
+// Add CORS headers
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+}
+
+export async function OPTIONS() {
+  return NextResponse.json({}, { headers: corsHeaders })
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,7 +37,10 @@ export async function POST(request: NextRequest) {
 
     if (!contentType.includes("multipart/form-data")) {
       console.error("Expected multipart/form-data, got:", contentType)
-      return NextResponse.json({ error: "Invalid content type. Expected multipart/form-data." }, { status: 400 })
+      return NextResponse.json(
+        { error: "Invalid content type. Expected multipart/form-data." },
+        { status: 400, headers: corsHeaders }
+      )
     }
 
     // Parse the form data
@@ -25,7 +48,10 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File | null
 
     if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 })
+      return NextResponse.json(
+        { error: "No file provided" },
+        { status: 400, headers: corsHeaders }
+      )
     }
 
     // Log file details for debugging
@@ -51,20 +77,28 @@ export async function POST(request: NextRequest) {
     console.log(`File saved to ${filepath}`)
 
     // Call OpenAI's transcription API with the file path
-    // Updated to use the correct method for the latest OpenAI SDK
-    const transcription = await openai.audio.transcriptions.create({
-      file: new File([buffer], file.name, { type: file.type }),
-      model: "whisper-1",
-      language: "en",
-      response_format: "text",
-    })
+    try {
+      const transcription = await openai.audio.transcriptions.create({
+        file: new File([buffer], file.name, { type: file.type }),
+        model: "whisper-1",
+        language: "en",
+        response_format: "text",
+      })
 
-    console.log("Transcription successful")
-
-    // Return the transcription
-    return NextResponse.json({ text: transcription })
+      console.log("Transcription successful")
+      return NextResponse.json({ text: transcription }, { headers: corsHeaders })
+    } catch (openaiError: any) {
+      console.error("OpenAI API error:", openaiError)
+      return NextResponse.json(
+        { error: `OpenAI API error: ${openaiError.message}` },
+        { status: 500, headers: corsHeaders }
+      )
+    }
   } catch (error: any) {
     console.error("Error in transcription API:", error)
-    return NextResponse.json({ error: error.message || "Failed to transcribe audio" }, { status: 500 })
+    return NextResponse.json(
+      { error: error.message || "Failed to transcribe audio" },
+      { status: 500, headers: corsHeaders }
+    )
   }
 }

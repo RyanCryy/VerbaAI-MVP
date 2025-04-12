@@ -1,9 +1,5 @@
+/** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    serverActions: {
-      bodySizeLimit: '60mb', // Increased to 60MB as requested
-    },
-  },
   // Improve development performance
   reactStrictMode: true,
   swcMinify: true,
@@ -11,8 +7,11 @@ const nextConfig = {
   poweredByHeader: false,
   // Optimize image handling
   images: {
-    domains: ['localhost'],
+    domains: ['lh3.googleusercontent.com'],
     formats: ['image/avif', 'image/webp'],
+  },
+  env: {
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   },
 };
 

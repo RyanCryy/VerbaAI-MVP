@@ -1,23 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
-import OpenAI from "openai"
 import { writeFile } from "fs/promises"
 import { join } from "path"
 import { v4 as uuidv4 } from "uuid"
 import { mkdir } from "fs/promises"
-
-// Initialize OpenAI client with error handling
-let openai: OpenAI
-try {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is not set in environment variables")
-  }
-  openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  })
-} catch (error) {
-  console.error("Failed to initialize OpenAI client:", error)
-  throw error
-}
 
 // Add CORS headers
 const corsHeaders = {
@@ -57,43 +42,56 @@ export async function POST(request: NextRequest) {
     // Log file details for debugging
     console.log(`Received file: ${file.name}, type: ${file.type}, size: ${file.size} bytes`)
 
-    // Create a temporary directory if it doesn't exist
-    const tmpDir = join(process.cwd(), "tmp")
-    try {
-      await mkdir(tmpDir, { recursive: true })
-    } catch (err) {
-      console.log("Directory already exists or cannot be created")
+    // Convert the file to base64
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const audioContent = buffer.toString('base64')
+
+    // Prepare the request to Google Cloud Speech-to-Text API
+    const requestBody = {
+      config: {
+        encoding: 'WEBM_OPUS',
+        sampleRateHertz: 48000,
+        languageCode: 'en-US',
+        model: 'latest_long',
+        enableAutomaticPunctuation: true,
+        useEnhanced: true,
+        audioChannelCount: 2  // Specify 2 channels for stereo audio
+      },
+      audio: {
+        content: audioContent
+      }
     }
 
-    // Save the file to disk temporarily
-    const bytes = await file.arrayBuffer()
-    const buffer = Buffer.from(bytes)
+    // Call Google Cloud Speech-to-Text API
+    const response = await fetch(
+      `https://speech.googleapis.com/v1/speech:recognize?key=${process.env.GOOGLE_CLOUD_API_KEY}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody)
+      }
+    )
 
-    // Generate a unique filename
-    const filename = `${uuidv4()}.${file.name.split(".").pop() || "webm"}`
-    const filepath = join(tmpDir, filename)
-
-    await writeFile(filepath, buffer)
-    console.log(`File saved to ${filepath}`)
-
-    // Call OpenAI's transcription API with the file path
-    try {
-      const transcription = await openai.audio.transcriptions.create({
-        file: new File([buffer], file.name, { type: file.type }),
-        model: "whisper-1",
-        language: "en",
-        response_format: "text",
-      })
-
-      console.log("Transcription successful")
-      return NextResponse.json({ text: transcription }, { headers: corsHeaders })
-    } catch (openaiError: any) {
-      console.error("OpenAI API error:", openaiError)
-      return NextResponse.json(
-        { error: `OpenAI API error: ${openaiError.message}` },
-        { status: 500, headers: corsHeaders }
-      )
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(`Google Speech-to-Text API error: ${JSON.stringify(errorData)}`)
     }
+
+    const data = await response.json()
+
+    // Extract transcription from response
+    const transcription = data.results
+      ?.map((result: any) => result.alternatives?.[0]?.transcript)
+      .join('\n')
+
+    if (!transcription) {
+      throw new Error('No transcription returned from Google Speech-to-Text')
+    }
+
+    console.log("Transcription successful")
+    return NextResponse.json({ text: transcription }, { headers: corsHeaders })
   } catch (error: any) {
     console.error("Error in transcription API:", error)
     return NextResponse.json(

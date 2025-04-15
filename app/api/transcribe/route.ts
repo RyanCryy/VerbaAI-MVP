@@ -55,16 +55,23 @@ export async function POST(request: NextRequest) {
         model: 'latest_long',
         enableAutomaticPunctuation: true,
         useEnhanced: true,
-        audioChannelCount: 2  // Specify 2 channels for stereo audio
+        audioChannelCount: 2,  // Specify 2 channels for stereo audio
+        enableSeparateRecognitionPerChannel: true,
+        enableWordTimeOffsets: true,
+        diarizationConfig: {
+          enableSpeakerDiarization: true,
+          minSpeakerCount: 2,
+          maxSpeakerCount: 2
+        }
       },
       audio: {
         content: audioContent
       }
     }
 
-    // Call Google Cloud Speech-to-Text API
+    // Call Google Cloud Speech-to-Text API using v1p1beta1 endpoint for speaker diarization
     const response = await fetch(
-      `https://speech.googleapis.com/v1/speech:recognize?key=${process.env.GOOGLE_CLOUD_API_KEY}`,
+      `https://speech.googleapis.com/v1p1beta1/speech:recognize?key=${process.env.GOOGLE_CLOUD_API_KEY}`,
       {
         method: 'POST',
         headers: {
@@ -81,17 +88,43 @@ export async function POST(request: NextRequest) {
 
     const data = await response.json()
 
-    // Extract transcription from response
-    const transcription = data.results
-      ?.map((result: any) => result.alternatives?.[0]?.transcript)
-      .join('\n')
+    // Process the diarized transcription
+    let currentSpeaker = -1
+    let conversationText = ''
+    let currentUtterance = ''
 
-    if (!transcription) {
-      throw new Error('No transcription returned from Google Speech-to-Text')
+    // Process each word with speaker tags
+    data.results?.forEach((result: any) => {
+      if (result.alternatives?.[0]?.words) {
+        const words = result.alternatives[0].words
+
+        words.forEach((word: any) => {
+          const speakerTag = word.speakerTag || 0
+
+          if (currentSpeaker !== speakerTag) {
+            // If we have accumulated text for the previous speaker, add it
+            if (currentUtterance.trim()) {
+              conversationText += `Speaker ${currentSpeaker + 1}: ${currentUtterance.trim()}\n\n`
+            }
+
+            // Start new utterance for new speaker
+            currentSpeaker = speakerTag
+            currentUtterance = word.word + ' '
+          } else {
+            // Continue current utterance
+            currentUtterance += word.word + ' '
+          }
+        })
+      }
+    })
+
+    // Add the last utterance
+    if (currentUtterance.trim()) {
+      conversationText += `Speaker ${currentSpeaker + 1}: ${currentUtterance.trim()}\n\n`
     }
 
-    console.log("Transcription successful")
-    return NextResponse.json({ text: transcription }, { headers: corsHeaders })
+    console.log("Transcription with diarization successful")
+    return NextResponse.json({ text: conversationText.trim() }, { headers: corsHeaders })
   } catch (error: any) {
     console.error("Error in transcription API:", error)
     return NextResponse.json(

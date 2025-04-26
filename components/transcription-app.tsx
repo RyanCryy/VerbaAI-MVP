@@ -117,7 +117,6 @@ export default function TranscriptionApp({ userId, userPlan, currentUsage, usage
   const [isInitializing, setIsInitializing] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [isSummarizing, setIsSummarizing] = useState(false)
-  const [enableDiarization, setEnableDiarization] = useState(false)
   const [summaryMode, setSummaryMode] = useState<SummaryMode>("tldr")
   const [recordingMode, setRecordingMode] = useState<"mic" | "screen" | "both" | "desktop-app" | null>(null)
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false)
@@ -838,7 +837,6 @@ Troubleshooting tips:
 
       const formData = new FormData()
       formData.append("file", blob, "audio.webm")
-      formData.append("model", "whisper-1")
 
       // Add retry logic
       let retries = 3
@@ -846,42 +844,47 @@ Troubleshooting tips:
 
       while (retries > 0) {
         try {
+          console.log("Sending transcription request...")
           const response = await fetch("/api/transcribe", {
             method: "POST",
             body: formData,
           })
 
+          console.log("Response status:", response.status)
+          const result = await response.json()
+          console.log("Full API response:", result)
+
           if (!response.ok) {
             throw new Error(`Transcription API error: ${response.status}`)
           }
-
-          const result = await response.json()
 
           if (result.error) {
             throw new Error(result.error)
           }
 
-          if (result.text) {
-            let newText = result.text.trim()
-            if (newText.includes("Transcribed by https://otter.ai")) {
-              newText = newText.replace("Transcribed by https://otter.ai", "").trim()
-            }
+          if (result.transcription) {
+            console.log("Received transcription:", result.transcription)
+            let newText = result.transcription.trim()
             setTranscription((prev) => {
               if (isFinal) {
                 return newText
               }
               return prev + (prev ? "\n" : "") + newText
             })
+          } else {
+            console.error("No transcription in response:", result)
+            throw new Error("No transcription received from API")
           }
 
           setIsTranscribing(false)
           return
         } catch (error) {
           lastError = error
+          console.error("Transcription attempt failed:", error)
           retries--
           if (retries > 0) {
             console.log(`Retrying transcription... (${retries} attempts left)`)
-            await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second before retry
+            await new Promise(resolve => setTimeout(resolve, 1000))
           }
         }
       }
@@ -1134,8 +1137,8 @@ ${transcription}`
 
           <div
             className={`relative overflow-hidden group rounded-xl border border-slate-800 bg-gradient-to-b from-slate-800 to-slate-900 transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 ${isInitializing && recordingMode === "screen"
-                ? "border-emerald-500/50 shadow-lg shadow-emerald-500/10"
-                : ""
+              ? "border-emerald-500/50 shadow-lg shadow-emerald-500/10"
+              : ""
               }`}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
@@ -1404,8 +1407,8 @@ ${transcription}`
               variant="outline"
               onClick={isPaused ? resumeRecording : pauseRecording}
               className={`h-auto py-6 flex flex-col items-center justify-center gap-2 ${isPaused
-                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
-                  : "border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
+                : "border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
                 }`}
             >
               <div className="bg-slate-800 p-2 rounded-full">
@@ -1462,14 +1465,14 @@ ${transcription}`
               </div>
               <Switch
                 id="speaker-diarization"
-                checked={enableDiarization}
-                onCheckedChange={setEnableDiarization}
+                checked={true}
+                onCheckedChange={(value) => { }}
                 disabled={isRecording}
                 className="data-[state=checked]:bg-emerald-500"
               />
             </div>
 
-            {isRecording && enableDiarization && (
+            {isRecording && (
               <div className="bg-amber-500/20 text-amber-200 text-sm p-3 rounded-lg border border-amber-500/30 flex items-start">
                 <AlertTriangle className="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
                 <p>Speaker identification will be applied to the final transcription when recording is complete.</p>
@@ -1538,14 +1541,14 @@ ${transcription}`
                   <div className="mt-6 w-full bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
                     <p className="text-slate-400 text-xs mb-2">Previous transcription:</p>
                     <div className="text-slate-300 text-sm whitespace-pre-wrap">
-                      {enableDiarization ? formatTranscription(transcription) : <p>{transcription}</p>}
+                      {formatTranscription(transcription)}
                     </div>
                   </div>
                 )}
               </div>
             ) : transcription ? (
               <div className="text-slate-200 whitespace-pre-wrap leading-relaxed">
-                {enableDiarization ? formatTranscription(transcription) : transcription}
+                {formatTranscription(transcription)}
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center h-full py-12 text-center">

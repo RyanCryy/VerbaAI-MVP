@@ -1,8 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { writeFile } from "fs/promises"
-import { join } from "path"
-import { v4 as uuidv4 } from "uuid"
-import { mkdir } from "fs/promises"
+import { SpeechClient } from '@google-cloud/speech'
 
 // Add CORS headers
 const corsHeaders = {
@@ -11,124 +8,129 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 }
 
+// Initialize Google Cloud Speech client
+const speechClient = new SpeechClient({
+  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+  projectId: process.env.GOOGLE_CLOUD_PROJECT_ID
+})
+
 export async function OPTIONS() {
   return NextResponse.json({}, { headers: corsHeaders })
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    // Check if the request is multipart form data
-    const contentType = request.headers.get("content-type") || ""
-
-    if (!contentType.includes("multipart/form-data")) {
-      console.error("Expected multipart/form-data, got:", contentType)
+    // Check content type
+    const contentType = req.headers.get('content-type')
+    if (!contentType?.includes('multipart/form-data')) {
+      console.error('Invalid content type:', contentType)
       return NextResponse.json(
-        { error: "Invalid content type. Expected multipart/form-data." },
+        { error: 'Content type must be multipart/form-data' },
         { status: 400, headers: corsHeaders }
       )
     }
 
-    // Parse the form data
-    const formData = await request.formData()
-    const file = formData.get("file") as File | null
+    const formData = await req.formData()
+    const audioFile = formData.get('file') as File
 
-    if (!file) {
+    if (!audioFile) {
+      console.error('No audio file found in form data')
       return NextResponse.json(
-        { error: "No file provided" },
+        { error: 'No audio file provided' },
         { status: 400, headers: corsHeaders }
       )
     }
 
-    // Log file details for debugging
-    console.log(`Received file: ${file.name}, type: ${file.type}, size: ${file.size} bytes`)
+    console.log(`Received file: ${audioFile.name}, type: ${audioFile.type}, size: ${audioFile.size} bytes`)
 
-    // Convert the file to base64
-    const buffer = Buffer.from(await file.arrayBuffer())
+    // Convert audio file to base64
+    const buffer = Buffer.from(await audioFile.arrayBuffer())
     const audioContent = buffer.toString('base64')
 
-    // Prepare the request to Google Cloud Speech-to-Text API
-    const requestBody = {
-      config: {
-        encoding: 'WEBM_OPUS',
-        sampleRateHertz: 48000,
-        languageCode: 'en-US',
-        model: 'latest_long',
-        enableAutomaticPunctuation: true,
-        useEnhanced: true,
-        audioChannelCount: 2,  // Specify 2 channels for stereo audio
-        enableSeparateRecognitionPerChannel: true,
-        enableWordTimeOffsets: true,
-        diarizationConfig: {
-          enableSpeakerDiarization: true,
-          minSpeakerCount: 2,
-          maxSpeakerCount: 2
-        }
-      },
-      audio: {
-        content: audioContent
+    // Log audio content details
+    console.log(`Audio content length: ${audioContent.length} characters`)
+    console.log(`Audio content preview: ${audioContent.substring(0, 100)}...`)
+
+    // Configure the request
+    const config = {
+      encoding: 'WEBM_OPUS',
+      sampleRateHertz: 48000,
+      languageCode: 'en-US',
+      enableAutomaticPunctuation: true,
+      model: 'phone_call',
+      audioChannelCount: 2,
+      useEnhanced: true,
+      diarizationConfig: {
+        enableSpeakerDiarization: true,
+        minSpeakerCount: 2,
+        maxSpeakerCount: 2
       }
     }
 
-    // Call Google Cloud Speech-to-Text API using v1p1beta1 endpoint for speaker diarization
-    const response = await fetch(
-      `https://speech.googleapis.com/v1p1beta1/speech:recognize?key=${process.env.GOOGLE_CLOUD_API_KEY}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
-      }
-    )
-
-    if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(`Google Speech-to-Text API error: ${JSON.stringify(errorData)}`)
+    const audio = {
+      content: audioContent
     }
 
-    const data = await response.json()
+    console.log('Starting long running recognition with config:', config)
 
-    // Process the diarized transcription
-    let currentSpeaker = -1
-    let conversationText = ''
-    let currentUtterance = ''
-
-    // Process each word with speaker tags
-    data.results?.forEach((result: any) => {
-      if (result.alternatives?.[0]?.words) {
-        const words = result.alternatives[0].words
-
-        words.forEach((word: any) => {
-          const speakerTag = word.speakerTag || 0
-
-          if (currentSpeaker !== speakerTag) {
-            // If we have accumulated text for the previous speaker, add it
-            if (currentUtterance.trim()) {
-              conversationText += `Speaker ${currentSpeaker + 1}: ${currentUtterance.trim()}\n\n`
-            }
-
-            // Start new utterance for new speaker
-            currentSpeaker = speakerTag
-            currentUtterance = word.word + ' '
-          } else {
-            // Continue current utterance
-            currentUtterance += word.word + ' '
-          }
-        })
-      }
+    // Use longRunningRecognize for better handling of longer audio
+    const [operation] = await speechClient.longRunningRecognize({
+      config: config as any,
+      audio: audio,
     })
 
-    // Add the last utterance
-    if (currentUtterance.trim()) {
-      conversationText += `Speaker ${currentSpeaker + 1}: ${currentUtterance.trim()}\n\n`
+    console.log('Operation started, waiting for completion...')
+    const [response] = await operation.promise()
+
+    if (!response.results || response.results.length === 0) {
+      console.error('No transcription results received')
+      throw new Error('No transcription received from API')
     }
 
-    console.log("Transcription with diarization successful")
-    return NextResponse.json({ text: conversationText.trim() }, { headers: corsHeaders })
+    console.log(`Received ${response.results.length} results from API`)
+
+    // Format the transcription with speaker labels
+    let transcription = ''
+    let currentSpeaker = null
+    let currentText = ''
+
+    if (response.results) {
+      console.log(`Number of results: ${response.results.length}`)
+
+      // Process all results for speaker diarization
+      for (const result of response.results) {
+        if (result.alternatives && result.alternatives[0]) {
+          const words = result.alternatives[0].words || []
+
+          for (const wordInfo of words) {
+            // Check if this word has speaker information
+            if (wordInfo.speakerTag && wordInfo.speakerTag !== currentSpeaker) {
+              // If we have accumulated text for the previous speaker, add it
+              if (currentText.trim()) {
+                transcription += `Speaker ${currentSpeaker || '1'}: ${currentText.trim()}\n`
+              }
+              currentSpeaker = wordInfo.speakerTag
+              currentText = ''
+            }
+
+            // Add the word to the current speaker's text
+            currentText += `${wordInfo.word} `
+          }
+        }
+      }
+
+      // Add the last speaker's text if any remains
+      if (currentText.trim()) {
+        transcription += `Speaker ${currentSpeaker || '1'}: ${currentText.trim()}\n`
+      }
+    }
+
+    console.log('Final transcription with speakers:', transcription)
+    return NextResponse.json({ transcription }, { headers: corsHeaders })
   } catch (error: any) {
-    console.error("Error in transcription API:", error)
+    console.error('Error in transcription API:', error)
     return NextResponse.json(
-      { error: error.message || "Failed to transcribe audio" },
+      { error: `Transcription API error: ${error.message}` },
       { status: 500, headers: corsHeaders }
     )
   }

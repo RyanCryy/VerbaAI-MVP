@@ -21,6 +21,7 @@ export function SummaryModeSelector({ value, onChange, disabled = false }: Summa
     { value: "notes" as const, label: "Study Notes", icon: "📚" },
     { value: "bullets" as const, label: "Bullet Points", icon: "🗒️" },
     { value: "actions" as const, label: "Action Items", icon: "🎯" },
+    { value: "sales" as const, label: "Sales Call Analysis", icon: "📊" },
   ]
 
   const selectedMode = modes.find((mode) => mode.value === value) || modes[0]
